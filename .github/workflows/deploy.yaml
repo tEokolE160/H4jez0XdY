@@ -1,0 +1,62 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "develop" ]   # runs when you push to main
+
+jobs:
+  build-test-deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: us-east-1
+      IMAGE_NAME: xyz-demo
+      IMAGE_TAG: latest
+
+    steps:
+      # 1. Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python & run tests
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements.txt
+          pip install pytest
+      - name: Run tests
+        run: pytest -v app/tests/
+
+      # 3. Configure AWS credentials (needs GitHub Secrets)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_CICD }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_CICD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 4. Login to ECR
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # 5. Build & push Docker image
+      - name: Build, tag, and push image
+        run: |
+          ECR_URI=${{ steps.ecr.outputs.registry }}/${{ env.IMAGE_NAME }}
+          docker build -t $ECR_URI:${{ env.IMAGE_TAG }} -f docker/Dockerfile .
+          docker push $ECR_URI:${{ env.IMAGE_TAG }}
+          echo "ECR_URI=$ECR_URI" >> $GITHUB_ENV
+
+      # 6. Deploy with Helm
+      - name: Deploy to EKS using Helm
+        run: |
+          aws eks update-kubeconfig --region $AWS_REGION --name eks-demo-cluster
+          helm upgrade --install sample-demo ./helm-chart \
+            --set image.repository=$ECR_URI \
+            --set image.tag=${{ env.IMAGE_TAG }}
